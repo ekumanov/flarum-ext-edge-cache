@@ -2,6 +2,7 @@
 
 namespace Ekumanov\EdgeCache;
 
+use Flarum\Foundation\Config;
 use Flarum\Http\CookieFactory;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
@@ -39,12 +40,25 @@ class EdgeCacheMiddleware implements Middleware
     ];
 
     /**
-     * Edge TTL via s-maxage. max-age=0 keeps browsers from caching.
+     * Edge TTL via s-maxage (max-age=0 keeps browsers from caching).
+     *
+     * The long TTL only applies when Cloudflare purge credentials are
+     * configured: PurgeDiscussionCache then evicts a discussion's landing page
+     * on every write, so freshness no longer relies on a short TTL and the long
+     * tail of /d/* URLs can stay warm (cold MISS ~1s origin TTFB -> warm HIT
+     * ~35ms). 1h bounds staleness for deep-pagination URLs that purge-by-URL
+     * can't enumerate.
+     *
+     * Without credentials (no purge), we keep the original 300s so a guest can
+     * never see content more than 5 min stale — making this safe to ship
+     * before the CF token is in place, and correct for installs not on CF.
      */
-    private const EDGE_TTL = 300;
+    private const LONG_TTL = 3600;
+    private const SHORT_TTL = 300;
 
     public function __construct(
-        protected CookieFactory $cookie
+        protected CookieFactory $cookie,
+        protected Config $config,
     ) {
     }
 
@@ -61,7 +75,7 @@ class EdgeCacheMiddleware implements Middleware
             return $response
                 ->withoutHeader('Set-Cookie')
                 ->withoutHeader('X-CSRF-Token')
-                ->withHeader('Cache-Control', 'public, s-maxage='.self::EDGE_TTL.', max-age=0, must-revalidate')
+                ->withHeader('Cache-Control', 'public, s-maxage='.$this->edgeTtl().', max-age=0, must-revalidate')
                 ->withHeader('Server-Timing', sprintf('origin;dur=%.0f', (microtime(true) - $started) * 1000));
         }
 
@@ -73,6 +87,21 @@ class EdgeCacheMiddleware implements Middleware
         }
 
         return $response;
+    }
+
+    /**
+     * Long edge TTL only once Cloudflare purge-on-write is wired up (zone id +
+     * api token in config.php); otherwise the conservative 5-minute TTL. Mirror
+     * of CloudflareCachePurger's configured check, kept here so the cache layer
+     * stays self-contained and cheap (no Guzzle client construction per render).
+     */
+    private function edgeTtl(): int
+    {
+        $cf = isset($this->config['cloudflare']) ? (array) $this->config['cloudflare'] : [];
+
+        $purgeReady = ! empty($cf['zone_id']) && ! empty($cf['api_token']);
+
+        return $purgeReady ? self::LONG_TTL : self::SHORT_TTL;
     }
 
     private function isCacheableRequest(Request $request): bool
