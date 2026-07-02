@@ -23,9 +23,13 @@ composer require ekumanov/flarum-ext-edge-cache
    are configured** (see below) — purge-on-write keeps the long tail warm
    without stale content — and a conservative **300s otherwise**. All other
    forum HTML → explicit `Cache-Control: private, no-store`.
-2. **JS retry shim**: on `400 csrf_token_mismatch`, single-flight `GET /api`
-   (refreshes session cookie + token via core's response-header update), retry
-   the original request once.
+2. **JS retry shim**: on a `400` whose JSON:API body carries
+   `code: csrf_token_mismatch`, single-flight `GET /api` (refreshes session
+   cookie + token via core's response-header update), then retry the original
+   request once. This covers `/api/*` writes as well as login and register:
+   although those POST to forum routes, Flarum 2.0's forum error handler
+   content-negotiates, so an XHR (default catch-all `Accept`) receives the same
+   JSON:API error the shim matches.
 3. **CSRF exemption** for `forum-widgets.guest-heartbeat`, the guest presence
    beacon of ekumanov/flarum-ext-forum-widgets (spoofable anyway, and the
    highest-frequency 400 source on cached pages). A no-op when that extension
@@ -48,9 +52,12 @@ composer require ekumanov/flarum-ext-edge-cache
 
 Expression: host eq "example.com" AND starts_with(path, "/d/") AND
 method GET AND NOT (cookie contains "flarum_session" OR cookie contains
-"flarum_remember") → Eligible for cache, **Edge TTL: respect origin**,
-Browser TTL: respect origin. Adjust the host and the path prefix to your
-install (e.g. `/forum/d/` when Flarum is mounted under `/forum`).
+"flarum_remember" OR cookie contains "locale") → Eligible for cache,
+**Edge TTL: respect origin**, Browser TTL: respect origin. Adjust the host
+and the path prefix to your install (e.g. `/forum/d/` when Flarum is mounted
+under `/forum`). The `locale` clause keeps a language-switched guest render
+off the shared cache — it matches both the bare `locale` cookie and prefixed
+variants like `flarum_locale`, in lockstep with the origin (see Invariants).
 
 ## Cloudflare credentials (for purge-on-write + the long TTL)
 
@@ -69,6 +76,17 @@ zone) — do not use a Global API Key. Without these keys the extension keeps th
 conservative 300s edge TTL and the purge listener is a logged no-op, so it is
 safe to install before (or without) Cloudflare.
 
+## Known staleness
+
+Purge-on-write fires on discussion **content** events only (post
+added/edited/deleted/hidden/restored, discussion renamed/deleted/hidden/
+restored). Anything else embedded in a cached guest payload refreshes only
+within the edge TTL, not instantly — e.g. sticky/lock state, tag moves, poll
+votes, and like counts. Likewise, after a rename the old-slug URL keeps
+serving its cached page (then 301s) until it ages out under the TTL. All of
+this is bounded by the edge TTL by design; the TTL is the freshness floor for
+everything the purge list doesn't enumerate.
+
 ## Invariants — read before changing anything
 
 - The middleware path allowlist and the CF rule scope move **in lockstep, in
@@ -77,8 +95,10 @@ safe to install before (or without) Cloudflare.
   and the shim's refresh GET depend on it). This middleware is forum-only.
 - `/reset`, `/confirm` etc. are server-rendered Blade forms needing their
   session cookie — permanently denylisted.
-- Adding any guest-facing language switcher silently poisons the cache (CF
-  ignores `Vary`) — revisit the rule before shipping one.
+- A guest-facing language switcher would poison the shared cache (CF ignores
+  `Vary`). Origin-side this is now enforced — a request carrying a `locale`
+  cookie is served `private, no-store` — but keep the CF rule in lockstep (it
+  must also exclude the `locale` cookie, as above).
 - CSRF 400s never reach flarum.log (KnownError) — monitor nginx access-log
   double-400s instead.
 

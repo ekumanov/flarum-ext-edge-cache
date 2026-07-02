@@ -9,15 +9,29 @@ const m = window.m;
  *
  * A guest landing on a Cloudflare-cached page has no session cookie and a
  * stale CSRF token baked into the cached payload. Their first POST (login,
- * register, any XHR write) is rejected with 400 csrf_token_mismatch — and
- * that error response carries NO fresh token: the TokenMismatchException
- * unwinds past StartSession, so neither Set-Cookie nor X-CSRF-Token are
- * attached to it.
+ * register, any XHR write) is rejected with a 400 CSRF mismatch — and that
+ * error response carries NO fresh token: the TokenMismatchException unwinds
+ * past StartSession, so neither Set-Cookie nor X-CSRF-Token are attached to
+ * it. A manual retry or hard refresh re-serves the same cached page with the
+ * same stale token, so without this shim the guest is stuck until purge/TTL.
  *
- * Recovery: one cheap GET to the API root. Its 2xx response DOES pass
- * through StartSession, which sets a fresh session cookie, and core's
- * request extract() already updates app.session.csrfToken from the
- * X-CSRF-Token response header. Then the original request is retried once
+ * We detect the failure by the JSON:API error code: 400 with
+ * `error.response.errors[].code === 'csrf_token_mismatch'`. This covers login
+ * and register as well as /api writes. Login and register POST to the forum
+ * routes baseUrl+'/login' / '/register' (core's Session.login / SignUpModal),
+ * but on Flarum 2.0 the forum error handler content-negotiates
+ * (ContentNegotiationFormatter → RequestUtil::isApiRequest): an XHR — which
+ * core's app.request sends with the browser's default catch-all Accept, since
+ * core never sets Accept and Mithril only sets its own when `deserialize`
+ * isn't a function — is treated as an API request and receives the same
+ * JSON:API error body. (Only a real navigation, with an Accept preferring
+ * text/html, gets the HTML error page; login and register are never
+ * navigations.) Verified in-browser against 2.0.0-rc.4.
+ *
+ * Recovery: one cheap GET to the API root. Its 2xx response DOES pass through
+ * StartSession, which sets a fresh session cookie, and core's request
+ * extract() already updates app.session.csrfToken from the X-CSRF-Token
+ * response header. Then the original request is retried once
  * (transformRequestOptions re-reads the fresh token at send time).
  *
  * The refresh is single-flight: concurrent boot-time failures (e.g. several

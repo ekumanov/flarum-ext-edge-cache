@@ -2,6 +2,7 @@
 
 namespace Ekumanov\EdgeCache;
 
+use Flarum\Foundation\Config;
 use Flarum\Frontend\Document;
 use Illuminate\Contracts\Filesystem\Factory;
 use Psr\Http\Message\ServerRequestInterface as Request;
@@ -43,7 +44,8 @@ class AddDiscussionChunkPreloads
     private ?array $manifest = null;
 
     public function __construct(
-        protected Factory $filesystem
+        protected Factory $filesystem,
+        protected Config $config,
     ) {
     }
 
@@ -72,15 +74,13 @@ class AddDiscussionChunkPreloads
     }
 
     /**
-     * Mirrors EdgeCacheMiddleware: the URI path may or may not still carry the
-     * /forum mount prefix depending on middleware order; normalize, then match
-     * the discussion route prefix.
+     * The URI path may or may not still carry the forum mount prefix depending
+     * on middleware order; normalize via the shared ForumPath helper (same
+     * logic EdgeCacheMiddleware uses), then match the discussion route prefix.
      */
     private function isDiscussionPath(string $path): bool
     {
-        if ($path === '/forum' || str_starts_with($path, '/forum/')) {
-            $path = substr($path, strlen('/forum')) ?: '/';
-        }
+        $path = ForumPath::relative($path, $this->config->url()->getPath());
 
         return str_starts_with($path, '/d/');
     }

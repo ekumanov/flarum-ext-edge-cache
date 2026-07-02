@@ -118,7 +118,17 @@ class EdgeCacheMiddleware implements Middleware
             return false;
         }
 
-        $path = $this->forumRelativePath($request->getUri()->getPath());
+        // A locale cookie yields a localised render that is still "public".
+        // Cloudflare ignores Vary, so caching it shared would serve one guest's
+        // language to every other guest. Core reads the guest locale from the
+        // UNPREFIXED `locale` key (SetLocale: Arr::get($cookies, 'locale'));
+        // locale-switcher extensions may instead set the cookie-prefixed
+        // variant, so decline on either.
+        if (isset($cookies['locale']) || isset($cookies[$this->cookie->getName('locale')])) {
+            return false;
+        }
+
+        $path = ForumPath::relative($request->getUri()->getPath(), $this->config->url()->getPath());
 
         foreach (self::DENIED_PATH_PREFIXES as $prefix) {
             if (str_starts_with($path, $prefix)) {
@@ -133,19 +143,5 @@ class EdgeCacheMiddleware implements Middleware
         }
 
         return false;
-    }
-
-    /**
-     * Depending on where the BasePath middleware sits relative to the forum
-     * pipe, the URI path may or may not still carry the /forum mount prefix.
-     * Normalize to the forum-relative form.
-     */
-    private function forumRelativePath(string $path): string
-    {
-        if ($path === '/forum' || str_starts_with($path, '/forum/')) {
-            return substr($path, strlen('/forum')) ?: '/';
-        }
-
-        return $path;
     }
 }
