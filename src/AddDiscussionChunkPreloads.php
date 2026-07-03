@@ -4,7 +4,6 @@ namespace Ekumanov\EdgeCache;
 
 use Flarum\Foundation\Config;
 use Flarum\Frontend\Document;
-use Illuminate\Contracts\Filesystem\Factory;
 use Psr\Http\Message\ServerRequestInterface as Request;
 
 /**
@@ -22,29 +21,18 @@ use Psr\Http\Message\ServerRequestInterface as Request;
  * guests (served from the edge cache) and logged-in members alike — because
  * it is a client-side render win, not a server/cache one.
  *
- * The href is built exactly the way Flarum's own asset references are
- * (`disk('flarum-assets')->url($path) . '?v=' . <rev-manifest hash>`), so each
- * preload is byte-identical to the URL the webpack runtime later requests and
- * the browser de-duplicates it — no double download. The rev-manifest hashes
- * are environment- and build-specific (they change on every recompile), so
- * they are read at runtime rather than hardcoded.
+ * EdgeCacheMiddleware additionally mirrors these preloads as `Link` response
+ * headers so Cloudflare Early Hints can replay them in a 103 before the
+ * origin has responded; the in-document tags remain for browsers/CDNs
+ * without Early Hints support. URL construction is shared via AssetUrls
+ * (href built exactly the way Flarum's own asset references are), so tag and
+ * header are byte-identical to what the webpack runtime later requests and
+ * the browser de-duplicates — no double download.
  */
 class AddDiscussionChunkPreloads
 {
-    /**
-     * rev-manifest.json keys for the chunks to preload. If core ever renames or
-     * removes one, the manifest lookup misses and that preload is silently
-     * skipped (see __invoke) — a core upgrade can never 500 the page here.
-     */
-    private const DISCUSSION_CHUNKS = [
-        'js/core/forum/components/PostStream.js',
-        'js/core/forum/components/PostStreamScrubber.js',
-    ];
-
-    private ?array $manifest = null;
-
     public function __construct(
-        protected Factory $filesystem,
+        protected AssetUrls $assets,
         protected Config $config,
     ) {
     }
@@ -55,11 +43,10 @@ class AddDiscussionChunkPreloads
             return;
         }
 
-        $disk = $this->filesystem->disk('flarum-assets');
-        $manifest = $this->manifest();
+        foreach (AssetUrls::DISCUSSION_CHUNKS as $path) {
+            $url = $this->assets->url($path);
 
-        foreach (self::DISCUSSION_CHUNKS as $path) {
-            if (! isset($manifest[$path])) {
+            if ($url === null) {
                 continue;
             }
 
@@ -67,7 +54,7 @@ class AddDiscussionChunkPreloads
             // forum.js's own high-priority download. Preloading at default
             // priority still starts them early (in parallel), which is the win.
             $document->preloads[] = [
-                'href' => $disk->url($path).'?v='.$manifest[$path],
+                'href' => $url,
                 'as' => 'script',
             ];
         }
@@ -83,26 +70,5 @@ class AddDiscussionChunkPreloads
         $path = ForumPath::relative($path, $this->config->url()->getPath());
 
         return str_starts_with($path, '/d/');
-    }
-
-    /**
-     * Read rev-manifest.json once per request. Any failure (missing/unreadable/
-     * malformed) degrades to "no preloads" rather than erroring the render.
-     */
-    private function manifest(): array
-    {
-        if ($this->manifest !== null) {
-            return $this->manifest;
-        }
-
-        try {
-            $disk = $this->filesystem->disk('flarum-assets');
-            $json = $disk->exists('rev-manifest.json') ? $disk->get('rev-manifest.json') : null;
-            $this->manifest = $json ? (json_decode($json, true) ?: []) : [];
-        } catch (\Throwable $e) {
-            $this->manifest = [];
-        }
-
-        return $this->manifest;
     }
 }

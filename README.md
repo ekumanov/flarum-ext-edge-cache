@@ -1,10 +1,12 @@
 # Edge Cache (guest pages) — ekumanov/flarum-ext-edge-cache
 
-Makes guest page views cookieless so Cloudflare can safely cache guest HTML at
-the edge, plus a client-side CSRF retry shim so auth flows survive landing on a
-cached page. It also preloads the discussion page's boot-critical JS chunks, and
-can purge Cloudflare on every post change so a long edge TTL never serves stale
-content. Requires Flarum 2.0.
+Makes guest page views cookieless so Cloudflare can safely cache guest HTML —
+discussion pages, the index, and tag pages — at the edge, plus a client-side
+CSRF retry shim so auth flows survive landing on a cached page. It also
+preloads the discussion page's boot-critical JS chunks, emits `Link:
+rel=preload` headers for Cloudflare Early Hints, and can purge Cloudflare on
+every content change so a long edge TTL never serves stale content. Requires
+Flarum 2.0.
 
 ## Installation
 
@@ -16,7 +18,8 @@ composer require ekumanov/flarum-ext-edge-cache
 
 1. **EdgeCacheMiddleware** (forum frontend, inserted *before* `StartSession` —
    StartSession attaches cookies on the response's way OUT, so only an outer
-   middleware can strip them): credential-less GET/HEAD on allowlisted paths →
+   middleware can strip them): credential-less GET/HEAD on an allowlisted path
+   (`/d/*`, the index `/`, and `/t/*`) →
    strip ALL `Set-Cookie` + `X-CSRF-Token`, emit a `Server-Timing: origin`
    header and `Cache-Control: public, s-maxage=<ttl>, max-age=0,
    must-revalidate`. The edge TTL is **3600s when Cloudflare purge credentials
@@ -43,21 +46,42 @@ composer require ekumanov/flarum-ext-edge-cache
    logged-in members alike.
 5. **Cloudflare purge-on-write**: when a discussion's content changes (post
    added/edited/deleted/hidden/restored, discussion renamed/deleted/hidden/
-   restored), queues a purge of that discussion's canonical landing URL. Lets
-   the edge TTL stay long without guests seeing stale pages. Best-effort and
-   queued, so a Cloudflare hiccup never blocks the user's action; a no-op (with
-   a log line) when no credentials are configured.
+   restored), queues a purge of every cached page the write invalidates: the
+   discussion's canonical landing URL, its slugless `/d/{id}` variant (served
+   directly, so it caches under its own key), the forum index, and the landing
+   pages of its tags and their parents. Lets the edge TTL stay long without
+   guests seeing stale pages. Best-effort and queued, so a Cloudflare hiccup
+   never blocks the user's action; a no-op (with a log line) when no
+   credentials are configured.
+6. **Early Hints `Link` headers**: every 200 HTML response — cacheable or
+   private — carries `Link: <…>; rel=preload` headers for `forum.css`,
+   `forum.js`, the active locale bundle, and (on `/d/*`) the two PostStream
+   chunks. With **Early Hints** enabled on Cloudflare (Speed → Optimization;
+   available on the Free plan) these are replayed as a `103 Early Hints`
+   response while the origin is still rendering, so the browser downloads the
+   render-critical assets during server think-time. That helps most exactly
+   where the edge cache can't: logged-in members (always DYNAMIC) and
+   cold-MISS guests. Browsers de-duplicate against the identical in-HTML
+   references, so where 103 isn't supported the headers are inert.
 
-## The matching Cloudflare Cache Rule (v1)
+## The matching Cloudflare Cache Rule (v2)
 
-Expression: host eq "example.com" AND starts_with(path, "/d/") AND
-method GET AND NOT (cookie contains "flarum_session" OR cookie contains
-"flarum_remember" OR cookie contains "locale") → Eligible for cache,
-**Edge TTL: respect origin**, Browser TTL: respect origin. Adjust the host
-and the path prefix to your install (e.g. `/forum/d/` when Flarum is mounted
-under `/forum`). The `locale` clause keeps a language-switched guest render
-off the shared cache — it matches both the bare `locale` cookie and prefixed
-variants like `flarum_locale`, in lockstep with the origin (see Invariants).
+Expression: host eq "example.com" AND (path eq "/" OR starts_with(path, "/d/")
+OR starts_with(path, "/t/")) AND method GET AND NOT (cookie contains
+"flarum_session" OR cookie contains "flarum_remember" OR cookie contains
+"locale") → Eligible for cache, **Edge TTL: respect origin**, Browser TTL:
+respect origin. Adjust the host and the paths to your install (e.g. path eq
+"/forum/" plus prefixes `/forum/d/`, `/forum/t/` when Flarum is mounted under
+`/forum`). The `locale` clause keeps a language-switched guest render off the
+shared cache — it matches both the bare `locale` cookie and prefixed variants
+like `flarum_locale`, in lockstep with the origin (see Invariants).
+
+Upgrading from the v1 rule (`/d/` only): deploying the extension first is
+safe — Cloudflare doesn't cache HTML without a matching rule, so the wider
+origin allowlist is inert for the extra paths until the rule covers them.
+Extend the rule right after deploying, then confirm `cf-cache-status:
+MISS → HIT` on `/`. Enable **Early Hints** (Speed → Optimization) at the same
+time to activate the `Link`-header preloads.
 
 ## Cloudflare credentials (for purge-on-write + the long TTL)
 
@@ -83,9 +107,12 @@ added/edited/deleted/hidden/restored, discussion renamed/deleted/hidden/
 restored). Anything else embedded in a cached guest payload refreshes only
 within the edge TTL, not instantly — e.g. sticky/lock state, tag moves, poll
 votes, and like counts. Likewise, after a rename the old-slug URL keeps
-serving its cached page (then 301s) until it ages out under the TTL. All of
-this is bounded by the edge TTL by design; the TTL is the freshness floor for
-everything the purge list doesn't enumerate.
+serving its cached page (then 301s) until it ages out under the TTL; after a
+re-tag, the OLD tag's landing page waits for the TTL (or the next write that
+touches that tag). Index/tag sort variants (`?sort=…`) cache under their own
+keys and are not purge-enumerable either. All of this is bounded by the edge
+TTL by design; the TTL is the freshness floor for everything the purge list
+doesn't enumerate.
 
 ## Invariants — read before changing anything
 

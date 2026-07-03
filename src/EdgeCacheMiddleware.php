@@ -4,6 +4,7 @@ namespace Ekumanov\EdgeCache;
 
 use Flarum\Foundation\Config;
 use Flarum\Http\CookieFactory;
+use Flarum\Locale\LocaleManager;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 use Psr\Http\Server\MiddlewareInterface as Middleware;
@@ -20,6 +21,14 @@ use Psr\Http\Server\RequestHandlerInterface as Handler;
  * Everything else HTML -> explicit Cache-Control: private, no-store, so a
  *              mis-scoped CF rule can never cache a personalised response.
  *
+ * Every 200 HTML response — cacheable or private — additionally gets `Link:
+ * rel=preload` headers for the render-critical assets (forum.css, forum.js,
+ * the locale bundle, and on /d/* the PostStream chunks). With Cloudflare
+ * Early Hints enabled these are replayed as a 103 while the origin is still
+ * thinking, so the browser downloads CSS/JS in parallel with the server
+ * render — the biggest win exactly where the edge cache can't help: members
+ * (always DYNAMIC) and cold-MISS guests.
+ *
  * INVARIANTS (do not break):
  * - The path allowlist below and the CF cache-rule expression move in
  *   lockstep, in the same deploy.
@@ -31,9 +40,16 @@ use Psr\Http\Server\RequestHandlerInterface as Handler;
 class EdgeCacheMiddleware implements Middleware
 {
     /**
-     * v1 scope: discussion pages only — the GSC-flagged URL group.
+     * v2 scope: discussion pages (v1), plus the index and tag landing pages.
+     * The index/tag lists change on every post, so caching them long relies on
+     * PurgeDiscussionCache also purging them on write (it does since v0.3);
+     * without CF credentials the short TTL bounds their staleness instead.
+     * Sort/filter variants (?sort=…) carry query strings, cache under their
+     * own CF keys, and are not purge-enumerable — the TTL bounds those too.
      */
-    private const ALLOWED_PATH_PREFIXES = ['/d/'];
+    private const ALLOWED_PATH_PREFIXES = ['/d/', '/t/'];
+
+    private const ALLOWED_EXACT_PATHS = ['/'];
 
     private const DENIED_PATH_PREFIXES = [
         '/reset', '/confirm', '/logout', '/unsubscribe', '/auth', '/api', '/admin',
@@ -44,10 +60,11 @@ class EdgeCacheMiddleware implements Middleware
      *
      * The long TTL only applies when Cloudflare purge credentials are
      * configured: PurgeDiscussionCache then evicts a discussion's landing page
-     * on every write, so freshness no longer relies on a short TTL and the long
-     * tail of /d/* URLs can stay warm (cold MISS ~1s origin TTFB -> warm HIT
-     * ~35ms). 1h bounds staleness for deep-pagination URLs that purge-by-URL
-     * can't enumerate.
+     * (and the index/tag pages listing it) on every write, so freshness no
+     * longer relies on a short TTL and the long tail of /d/* URLs can stay
+     * warm (cold MISS ~1s origin TTFB -> warm HIT ~35ms). 1h bounds staleness
+     * for deep-pagination and sort-variant URLs that purge-by-URL can't
+     * enumerate.
      *
      * Without credentials (no purge), we keep the original 300s so a guest can
      * never see content more than 5 min stale — making this safe to ship
@@ -59,6 +76,8 @@ class EdgeCacheMiddleware implements Middleware
     public function __construct(
         protected CookieFactory $cookie,
         protected Config $config,
+        protected AssetUrls $assets,
+        protected LocaleManager $locales,
     ) {
     }
 
@@ -70,8 +89,13 @@ class EdgeCacheMiddleware implements Middleware
         $response = $handler->handle($request);
 
         $isHtml = str_starts_with($response->getHeaderLine('Content-Type'), 'text/html');
+        $isPage = $response->getStatusCode() === 200 && $isHtml;
 
-        if ($cacheable && $response->getStatusCode() === 200 && $isHtml) {
+        if ($isPage) {
+            $response = $this->withPreloadLinkHeaders($response, $request);
+        }
+
+        if ($cacheable && $isPage) {
             return $response
                 ->withoutHeader('Set-Cookie')
                 ->withoutHeader('X-CSRF-Token')
@@ -87,6 +111,48 @@ class EdgeCacheMiddleware implements Middleware
         }
 
         return $response;
+    }
+
+    /**
+     * `Link: <url>; rel=preload` headers mirroring the document's own asset
+     * references. Browsers de-duplicate against the in-HTML tags (identical
+     * URLs), so without Early Hints these are a no-op-cost hint at header
+     * time; with CF Early Hints they become a 103 that starts the CSS/JS
+     * downloads during origin think-time.
+     *
+     * The locale bundle is resolved from the request's negotiated locale
+     * (LocaleManager holds it once the inner handler has run), so a cached
+     * guest page — always rendered in the default locale, per the locale
+     * cookie guard in isCacheableRequest — and a member's localised render
+     * each hint their own actual bundle.
+     */
+    private function withPreloadLinkHeaders(Response $response, Request $request): Response
+    {
+        $links = [];
+
+        if ($url = $this->assets->url('forum.css')) {
+            $links[] = '<'.$url.'>; rel=preload; as=style';
+        }
+
+        if ($url = $this->assets->url('forum.js')) {
+            $links[] = '<'.$url.'>; rel=preload; as=script';
+        }
+
+        $locale = $this->locales->getLocale();
+        if ($locale !== '' && ($url = $this->assets->url('forum-'.$locale.'.js'))) {
+            $links[] = '<'.$url.'>; rel=preload; as=script';
+        }
+
+        $path = ForumPath::relative($request->getUri()->getPath(), $this->config->url()->getPath());
+        if (str_starts_with($path, '/d/')) {
+            foreach (AssetUrls::DISCUSSION_CHUNKS as $key) {
+                if ($url = $this->assets->url($key)) {
+                    $links[] = '<'.$url.'>; rel=preload; as=script';
+                }
+            }
+        }
+
+        return $links === [] ? $response : $response->withAddedHeader('Link', $links);
     }
 
     /**
@@ -134,6 +200,10 @@ class EdgeCacheMiddleware implements Middleware
             if (str_starts_with($path, $prefix)) {
                 return false;
             }
+        }
+
+        if (in_array($path, self::ALLOWED_EXACT_PATHS, true)) {
+            return true;
         }
 
         foreach (self::ALLOWED_PATH_PREFIXES as $prefix) {
