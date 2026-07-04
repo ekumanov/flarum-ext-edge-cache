@@ -4,9 +4,11 @@ Makes guest page views cookieless so Cloudflare can safely cache guest HTML —
 discussion pages, the index, and tag pages — at the edge, plus a client-side
 CSRF retry shim so auth flows survive landing on a cached page. It also
 preloads the discussion page's boot-critical JS chunks, emits `Link:
-rel=preload` headers for Cloudflare Early Hints, and can purge Cloudflare on
-every content change so a long edge TTL never serves stale content. Requires
-Flarum 2.0.
+rel=preload` headers for Cloudflare Early Hints, can purge Cloudflare on
+every content change so a long edge TTL never serves stale content, and
+pre-paints the server-rendered discussion content for guests so the first
+post is visible (and is the LCP) at first paint instead of after the SPA
+boots. Requires Flarum 2.0.
 
 ## Installation
 
@@ -63,6 +65,32 @@ composer require ekumanov/flarum-ext-edge-cache
    where the edge cache can't: logged-in members (always DYNAMIC) and
    cold-MISS guests. Browsers de-duplicate against the identical in-HTML
    references, so where 103 isn't supported the headers are inert.
+7. **Visible pre-paint** (guests, `/d/*`): Flarum already server-renders the
+   discussion title + posts into `<noscript id="flarum-content">` — JS-enabled
+   browsers never paint it. This swaps the content wrapper view so that same
+   markup is emitted as a visible, styled block instead, and an inline
+   MutationObserver removes it on the first childList mutation of `#content` —
+   a microtask, i.e. in the same rendering frame in which Mithril's first
+   render lands, so exactly one of (pre-paint | hydrated page) is ever
+   painted. The first post's text becomes the LCP at ≈first paint; the
+   hydrated repaint is equal-or-smaller so it cannot re-trigger LCP (removed
+   elements remain LCP candidates in Chromium). In lab testing at a
+   phone-calibrated CPU throttle this collapsed the LCP−FCP gap from ~3s to
+   0 (LCP −58%) with zero CLS across the swap. If JS never boots, the block
+   simply stays — a strictly better no-JS story than core's `<noscript>`.
+   Media discipline while the block is visible: images wrapped by
+   [ekumanov/flarum-ext-cls-fix](https://github.com/ekumanov/flarum-ext-cls-fix)
+   keep their reserved aspect-ratio boxes (its CSS is unscoped on purpose),
+   emoji are size-stable via CSS, s9e MediaEmbed iframes sit in responsive
+   padding-box wrappers and are `loading="lazy"`; any other unsized `<img>` is
+   hidden inside the pre-paint, which only shortens the block — the safe
+   direction. Post images additionally get their `src` renamed in the
+   pre-paint copy (the placeholder box stays) so nothing fetches during the
+   critical window and the hydration timeline is byte-identical to a
+   non-pre-painted load, and below-fold posts are render-skipped via
+   `content-visibility: auto` so a 20-post page costs no more main-thread
+   time than a short one. Members are never pre-painted (their hydrated page
+   differs from the guest render).
 
 ## The matching Cloudflare Cache Rule (v2)
 
@@ -128,6 +156,16 @@ doesn't enumerate.
   must also exclude the `locale` cookie, as above).
 - CSRF 400s never reach flarum.log (KnownError) — monitor nginx access-log
   double-400s instead.
+- The pre-paint's LCP lock depends on one geometry rule: the pre-paint stack
+  above the first post must sit equal-or-HIGHER than the hydrated one (the
+  CSS deliberately undershoots by ~10px), so the pre-paint copy of the LCP
+  paragraph is always the equal-or-larger paint. If a theme change makes the
+  pre-paint sit lower, nothing breaks visually — but LCP silently returns to
+  hydration time. Re-verify after theme/hero changes (the class docblock in
+  `PrePaintDiscussion` documents the tuning).
+- The pre-paint view must keep the `#flarum-loading`, `#flarum-loading-error`
+  and `#flarum-content` element ids — core's boot scripts `getElementById`
+  them unconditionally.
 
 ## Rollback order
 
