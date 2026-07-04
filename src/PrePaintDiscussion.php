@@ -135,6 +135,7 @@ class PrePaintDiscussion
 #edge-prepaint .PostUser{display:block;min-height:32px;margin-bottom:15px}
 #edge-prepaint hr{border:0;border-top:1px solid var(--control-bg);margin:12px 0 0}
 #edge-prepaint .Post-body img:not([width]):not(.cls-img):not(.emoji){display:none}
+#edge-prepaint article:nth-of-type(n+6){content-visibility:auto;contain-intrinsic-size:auto 600px}
 #edge-prepaint > .container > div > a{display:inline-block;margin:10px 0;font-weight:600}
 @media (min-width:768px){#edge-prepaint h1{font-size:22px;padding:50px 15px 40px;margin:0 -15px}}
 CSS;
