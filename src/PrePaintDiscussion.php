@@ -82,9 +82,10 @@ class PrePaintDiscussion
     {
         return <<<'CSS'
 #edge-prepaint ~ #flarum-loading{display:none !important}
-#edge-prepaint h1{background:var(--hero-bg);color:var(--contrast-color, var(--hero-color));text-align:center;font-size:16px;font-weight:normal;line-height:1.5em;margin:0 -15px;padding:30px 15px}
-#edge-prepaint article{padding:12px 0 0}
-#edge-prepaint .PostUser{display:block;min-height:32px;padding-top:4px}
+#edge-prepaint h1{background:var(--hero-bg);color:var(--contrast-color, var(--hero-color));text-align:center;font-size:16px;font-weight:normal;line-height:1.5em;margin:0 -15px;padding:42px 15px 41px}
+#edge-prepaint > .container > div:first-of-type::before{content:'';display:block;height:36px;max-width:270px;margin:15px 0;background:var(--control-bg);border-radius:18px}
+#edge-prepaint article{padding:20px 0 0}
+#edge-prepaint .PostUser{display:block;min-height:32px;margin-bottom:15px}
 #edge-prepaint hr{border:0;border-top:1px solid var(--control-bg);margin:12px 0 0}
 #edge-prepaint > .container > div > a{display:inline-block;margin:10px 0;font-weight:600}
 @media (min-width:768px){#edge-prepaint h1{font-size:22px;padding:50px 15px 40px;margin:0 -15px}}
