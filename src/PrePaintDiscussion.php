@@ -77,6 +77,23 @@ class PrePaintDiscussion
      * post text already gets the app's exact typography (14px/1.7, 1em p
      * margins) for free; what's left is the hero band, post spacing, and
      * hiding the boot loader (core's inline script force-shows it).
+     *
+     * Media in the pre-paint (CLS discipline while the block is visible):
+     * - Images wrapped by ekumanov/flarum-ext-cls-fix keep their reserved box:
+     *   the wrapper span carries an inline aspect-ratio (exact when dimensions
+     *   are known, 16:9 fallback otherwise) and cls-fix's CSS is deliberately
+     *   unscoped, so the placeholder behaves identically here. Without the
+     *   SPA's ratio-correction JS the fallback box simply never changes size
+     *   while the pre-paint is visible — zero shift; the correction happens
+     *   after hydration exactly as it does today.
+     * - Emoji images are size-stable via CSS (height:1.5em; aspect-ratio:1).
+     * - s9e MediaEmbed iframes sit in responsive padding-box wrappers with
+     *   inline styles (box-stable) and are loading="lazy" (no fetch unless
+     *   in-viewport).
+     * - Anything else — an unsized <img> that no mechanism reserves space
+     *   for — WOULD shift the visible pre-paint as it loads, so it is hidden.
+     *   Hiding only makes the pre-paint stack shorter, which is the safe
+     *   direction for the LCP lock (see the class docblock contract).
      */
     private function css(): string
     {
@@ -87,6 +104,7 @@ class PrePaintDiscussion
 #edge-prepaint article{padding:20px 0 0}
 #edge-prepaint .PostUser{display:block;min-height:32px;margin-bottom:15px}
 #edge-prepaint hr{border:0;border-top:1px solid var(--control-bg);margin:12px 0 0}
+#edge-prepaint .Post-body img:not([width]):not(.cls-img):not(.emoji){display:none}
 #edge-prepaint > .container > div > a{display:inline-block;margin:10px 0;font-weight:600}
 @media (min-width:768px){#edge-prepaint h1{font-size:22px;padding:50px 15px 40px;margin:0 -15px}}
 CSS;
