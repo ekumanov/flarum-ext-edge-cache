@@ -3,6 +3,7 @@
 use Ekumanov\EdgeCache\AddDiscussionChunkPreloads;
 use Ekumanov\EdgeCache\EdgeCacheMiddleware;
 use Ekumanov\EdgeCache\Listener\PurgeDiscussionCache;
+use Ekumanov\EdgeCache\PrePaintDiscussion;
 use Flarum\Discussion\Event\Deleted as DiscussionDeleted;
 use Flarum\Discussion\Event\Hidden as DiscussionHidden;
 use Flarum\Discussion\Event\Renamed;
@@ -20,7 +21,14 @@ return [
         // Preload PostStream.js + PostStreamScrubber.js on /d/* so they fetch in
         // parallel with forum.js instead of serially after boot — collapses the
         // render-delay tail that holds back the first-post (LCP) paint.
-        ->content(AddDiscussionChunkPreloads::class),
+        ->content(AddDiscussionChunkPreloads::class)
+        // PROTOTYPE: paint the server-rendered discussion content immediately
+        // (guests only) instead of hiding it in <noscript>; removed in the
+        // same frame the SPA's first render lands. LCP ≈ FCP on /d/*.
+        ->content(PrePaintDiscussion::class),
+
+    (new Extend\View())
+        ->namespace('ekumanov-edge-cache', __DIR__.'/views'),
 
     // Must wrap OUTSIDE StartSession (it attaches Set-Cookie/X-CSRF-Token to
     // the response *after* its inner handler returns) AND outside the error
