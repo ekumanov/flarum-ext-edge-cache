@@ -8,7 +8,7 @@ use Flarum\Http\RequestUtil;
 use Psr\Http\Message\ServerRequestInterface as Request;
 
 /**
- * PROTOTYPE — makes the server-rendered discussion content paint immediately.
+ * Makes the server-rendered discussion content paint immediately (guests, /d/*).
  *
  * On /d/* the LCP element is the first post's text, but the SPA paints it only
  * after forum.js downloads + evaluates + boots (the render-delay tail). Core
@@ -66,6 +66,36 @@ class PrePaintDiscussion
 
         $document->contentView = 'ekumanov-edge-cache::prepaint';
         $document->head[] = '<style>'.$this->css().'</style>';
+        $document->content = $this->withNeutralizedPostImages($document->content);
+    }
+
+    /**
+     * Post images (cls-img) keep their reserved placeholder boxes in the
+     * pre-paint — the box comes from the wrapper span — but must not FETCH
+     * during the critical window. In-viewport lazy images otherwise start
+     * downloading while the pre-paint is visible, and arriving already-loaded
+     * at hydration reorders the app's first-paint sequence (measured
+     * +0.4–0.5s LCP on a fallback-ratio image page at the 20x lab profile,
+     * and it would contend with forum.js on pipes slower than the lab's).
+     * Renaming src on the pre-paint copy makes the ON-path network and
+     * hydration timeline identical to the OFF-path by construction: the SPA
+     * renders its own DOM from the payload, so images load exactly as they
+     * do today. No-JS users see the grey placeholder boxes.
+     *
+     * Emoji (tiny, CSS-sized) and s9e iframes (lazy, thumbnail-backed — they
+     * legitimately WIN the LCP when in-viewport) keep their src.
+     */
+    private function withNeutralizedPostImages(string|\Illuminate\Contracts\Support\Renderable $content): string
+    {
+        $html = $content instanceof \Illuminate\Contracts\Support\Renderable
+            ? $content->render()
+            : (string) $content;
+
+        return preg_replace(
+            '/(<img\b(?=[^>]*class="[^"]*\bcls-img\b)[^>]*?)\ssrc\s*=/i',
+            '$1 data-prepaint-src=',
+            $html
+        );
     }
 
     /**
