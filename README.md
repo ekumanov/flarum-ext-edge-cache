@@ -24,10 +24,13 @@ composer require ekumanov/flarum-ext-edge-cache
    (`/d/*`, the index `/`, and `/t/*`) →
    strip ALL `Set-Cookie` + `X-CSRF-Token`, emit a `Server-Timing: origin`
    header and `Cache-Control: public, s-maxage=<ttl>, max-age=0,
-   must-revalidate`. The edge TTL is **3600s when Cloudflare purge credentials
-   are configured** (see below) — purge-on-write keeps the long tail warm
-   without stale content — and a conservative **300s otherwise**. All other
-   forum HTML → explicit `Cache-Control: private, no-store`.
+   must-revalidate`. When Cloudflare purge credentials are configured (see
+   below) the edge TTL is **86400s for canonical (query-less) URLs** —
+   purge-on-write keeps those fresh, so the long tail stays warm for a day —
+   and **3600s for query-string variants** (`?sort=…`, `?page=…`), which cache
+   under their own CF keys that purge-by-URL cannot enumerate. Without
+   credentials it is a conservative **300s**. All other forum HTML → explicit
+   `Cache-Control: private, no-store`.
 2. **JS retry shim**: on a `400` whose JSON:API body carries
    `code: csrf_token_mismatch`, single-flight `GET /api` (refreshes session
    cookie + token via core's response-header update), then retry the original

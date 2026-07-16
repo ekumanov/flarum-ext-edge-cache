@@ -45,7 +45,8 @@ class EdgeCacheMiddleware implements Middleware
      * PurgeDiscussionCache also purging them on write (it does since v0.3);
      * without CF credentials the short TTL bounds their staleness instead.
      * Sort/filter variants (?sort=…) carry query strings, cache under their
-     * own CF keys, and are not purge-enumerable — the TTL bounds those too.
+     * own CF keys, and are not purge-enumerable — the shorter variant TTL
+     * bounds those (see edgeTtl).
      */
     private const ALLOWED_PATH_PREFIXES = ['/d/', '/t/'];
 
@@ -58,19 +59,23 @@ class EdgeCacheMiddleware implements Middleware
     /**
      * Edge TTL via s-maxage (max-age=0 keeps browsers from caching).
      *
-     * The long TTL only applies when Cloudflare purge credentials are
+     * The long TTLs only apply when Cloudflare purge credentials are
      * configured: PurgeDiscussionCache then evicts a discussion's landing page
-     * (and the index/tag pages listing it) on every write, so freshness no
-     * longer relies on a short TTL and the long tail of /d/* URLs can stay
-     * warm (cold MISS ~1s origin TTFB -> warm HIT ~35ms). 1h bounds staleness
-     * for deep-pagination and sort-variant URLs that purge-by-URL can't
-     * enumerate.
+     * (and the index/tag pages listing it) on every write, so freshness does
+     * not rely on the TTL at all and the long tail of /d/* URLs can stay
+     * warm (cold MISS ~1s origin TTFB -> warm HIT ~35ms).
+     *
+     * Purge-by-URL can only enumerate canonical (query-less) URLs, so the 24h
+     * TTL is reserved for those; query-string variants (?sort=…, ?page=…)
+     * cache under their own CF keys that no purge reaches, and keep the 1h
+     * bound they have always had.
      *
      * Without credentials (no purge), we keep the original 300s so a guest can
      * never see content more than 5 min stale — making this safe to ship
      * before the CF token is in place, and correct for installs not on CF.
      */
-    private const LONG_TTL = 3600;
+    private const CANONICAL_TTL = 86400;
+    private const VARIANT_TTL = 3600;
     private const SHORT_TTL = 300;
 
     public function __construct(
@@ -99,7 +104,7 @@ class EdgeCacheMiddleware implements Middleware
             return $response
                 ->withoutHeader('Set-Cookie')
                 ->withoutHeader('X-CSRF-Token')
-                ->withHeader('Cache-Control', 'public, s-maxage='.$this->edgeTtl().', max-age=0, must-revalidate')
+                ->withHeader('Cache-Control', 'public, s-maxage='.$this->edgeTtl($request).', max-age=0, must-revalidate')
                 ->withHeader('Server-Timing', sprintf('origin;dur=%.0f', (microtime(true) - $started) * 1000));
         }
 
@@ -156,18 +161,25 @@ class EdgeCacheMiddleware implements Middleware
     }
 
     /**
-     * Long edge TTL only once Cloudflare purge-on-write is wired up (zone id +
+     * Long edge TTLs only once Cloudflare purge-on-write is wired up (zone id +
      * api token in config.php); otherwise the conservative 5-minute TTL. Mirror
      * of CloudflareCachePurger's configured check, kept here so the cache layer
      * stays self-contained and cheap (no Guzzle client construction per render).
+     *
+     * Canonical URLs get the full 24h (purge-on-write keeps them fresh);
+     * query-string variants are not purge-enumerable and stay on the 1h bound.
      */
-    private function edgeTtl(): int
+    private function edgeTtl(Request $request): int
     {
         $cf = isset($this->config['cloudflare']) ? (array) $this->config['cloudflare'] : [];
 
         $purgeReady = ! empty($cf['zone_id']) && ! empty($cf['api_token']);
 
-        return $purgeReady ? self::LONG_TTL : self::SHORT_TTL;
+        if (! $purgeReady) {
+            return self::SHORT_TTL;
+        }
+
+        return $request->getUri()->getQuery() === '' ? self::CANONICAL_TTL : self::VARIANT_TTL;
     }
 
     private function isCacheableRequest(Request $request): bool
