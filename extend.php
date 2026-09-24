@@ -56,5 +56,28 @@ return [
         ->listen(Renamed::class, PurgeDiscussionCache::class)
         ->listen(DiscussionDeleted::class, PurgeDiscussionCache::class)
         ->listen(DiscussionHidden::class, PurgeDiscussionCache::class)
-        ->listen(DiscussionRestored::class, PurgeDiscussionCache::class),
+        ->listen(DiscussionRestored::class, PurgeDiscussionCache::class)
+        // Guest-visible changes that do not go through the events above.
+        // Event posts (retag, lock, sticky…) are saved via mergePost(), which
+        // never raises Posted, and the extension-level moves below delete or
+        // re-home posts without Deleted/Hidden reaching listeners. Some of
+        // them take content AWAY from guests — a retag into a restricted tag,
+        // recipients added to a public discussion — so a missed purge here is
+        // a leak for the length of the edge TTL, not just staleness. String
+        // class names: these extensions are optional, and an event that is
+        // never dispatched costs nothing.
+        ->listen('Flarum\Tags\Event\DiscussionWasTagged', PurgeDiscussionCache::class)
+        ->listen('Flarum\Approval\Event\PostWasApproved', PurgeDiscussionCache::class)
+        ->listen('Flarum\Sticky\Event\DiscussionWasStickied', PurgeDiscussionCache::class)
+        ->listen('Flarum\Sticky\Event\DiscussionWasUnstickied', PurgeDiscussionCache::class)
+        ->listen('Flarum\Lock\Event\DiscussionWasLocked', PurgeDiscussionCache::class)
+        ->listen('Flarum\Lock\Event\DiscussionWasUnlocked', PurgeDiscussionCache::class)
+        ->listen('FoF\MergeDiscussions\Events\DiscussionWasMerged', PurgeDiscussionCache::class)
+        ->listen('FoF\MovePosts\Event\PostsMoved', PurgeDiscussionCache::class)
+        ->listen('FoF\Byobu\Events\RecipientsChanged', PurgeDiscussionCache::class)
+        ->listen('FoF\Byobu\Events\DiscussionMadePublic', PurgeDiscussionCache::class)
+        // ekumanov/flarum-ext-link-preview fetches cards in a queued job that
+        // finishes after the Posted purge above has run, so a guest page cached
+        // in between kept showing a pending skeleton for the full edge TTL.
+        ->listen('Ekumanov\LinkPreview\Event\PreviewsChanged', PurgeDiscussionCache::class),
 ];

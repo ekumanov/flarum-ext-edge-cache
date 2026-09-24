@@ -166,8 +166,14 @@ class EdgeCacheMiddleware implements Middleware
      * of CloudflareCachePurger's configured check, kept here so the cache layer
      * stays self-contained and cheap (no Guzzle client construction per render).
      *
-     * Canonical URLs get the full 24h (purge-on-write keeps them fresh);
-     * query-string variants are not purge-enumerable and stay on the 1h bound.
+     * Only URLs purge-on-write can reach get the full 24h: the index, a tag
+     * page, and a discussion's landing URL. Everything else stays on the 1h
+     * bound — query-string variants, and discussion URLs with a second path
+     * segment. Those are post permalinks (`/d/{id}-{slug}/{near}`): core
+     * serves them 200 without a redirect, the SPA writes them into the
+     * address bar as a reader scrolls, so they are what gets shared and
+     * bookmarked — and no purge enumerates them. At 24h a post a moderator
+     * hid stayed visible to guests arriving by permalink for a day.
      */
     private function edgeTtl(Request $request): int
     {
@@ -179,7 +185,15 @@ class EdgeCacheMiddleware implements Middleware
             return self::SHORT_TTL;
         }
 
-        return $request->getUri()->getQuery() === '' ? self::CANONICAL_TTL : self::VARIANT_TTL;
+        if ($request->getUri()->getQuery() !== '') {
+            return self::VARIANT_TTL;
+        }
+
+        $path = ForumPath::relative($request->getUri()->getPath(), $this->config->url()->getPath());
+
+        return $path === '/' || preg_match('#^/(?:d/\d+(?:-[^/]*)?|t/[^/]+)$#', $path)
+            ? self::CANONICAL_TTL
+            : self::VARIANT_TTL;
     }
 
     private function isCacheableRequest(Request $request): bool

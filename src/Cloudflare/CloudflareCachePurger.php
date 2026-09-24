@@ -71,6 +71,19 @@ class CloudflareCachePurger
             return;
         }
 
+        // Cloudflare caps purge-by-URL at 30 files per call on Free/Pro plans
+        // and rejects the whole call beyond that. A merge or a retag can carry
+        // more URLs than that, so send them in batches.
+        foreach (array_chunk($urls, 30) as $batch) {
+            $this->purgeBatch($batch);
+        }
+    }
+
+    /**
+     * @param string[] $urls at most 30
+     */
+    private function purgeBatch(array $urls): void
+    {
         try {
             $response = $this->http->request(
                 'POST',

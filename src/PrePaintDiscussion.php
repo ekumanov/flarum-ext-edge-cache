@@ -95,7 +95,7 @@ class PrePaintDiscussion
             '/(<img\b(?=[^>]*class="[^"]*\bcls-img\b)[^>]*?)\ssrc\s*=/i',
             '$1 data-prepaint-src=',
             $html
-        );
+        ) ?? $html; // null on a PCRE failure (backtrack limit): serve unneutralized rather than 500
     }
 
     /**
