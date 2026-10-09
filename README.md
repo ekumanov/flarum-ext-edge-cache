@@ -44,7 +44,7 @@ composer require ekumanov/flarum-ext-edge-cache
    isn't installed.
 4. **Discussion chunk preload**: on `/d/*`, emits `<link rel="preload"
    as="script">` for core's `PostStream.js` + `PostStreamScrubber.js` (hashes
-   read from `rev-manifest.json` at runtime, so the preload URL always matches
+   asked of core's asset versioner at runtime, so the preload URL always matches
    what the webpack runtime fetches — no double download). These chunks are
    otherwise fetched serially *after* boot; preloading lets them download in
    parallel with `forum.js`, collapsing that render-delay tail. Helps guests and
