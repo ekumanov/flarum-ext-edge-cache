@@ -8,7 +8,7 @@ rel=preload` headers for Cloudflare Early Hints, can purge Cloudflare on
 every content change so a long edge TTL never serves stale content, and
 pre-paints the server-rendered discussion content for guests so the first
 post is visible (and is the LCP) at first paint instead of after the SPA
-boots. Requires Flarum 2.0.
+boots. Requires Flarum 2.0.0 or later.
 
 ## Installation
 
@@ -94,6 +94,15 @@ composer require ekumanov/flarum-ext-edge-cache
    `content-visibility: auto` so a 20-post page costs no more main-thread
    time than a short one. Members are never pre-painted (their hydrated page
    differs from the guest render).
+8. **Cloudflare purge on asset rebuilds**: every cached page embeds the
+   assets token it was rendered with, and the forum compares it with each API
+   response. After a rebuild of the forum assets (extension toggled, colours
+   or custom LESS saved, cache cleared from the console or the admin modal),
+   a cached page would otherwise prompt guests to reload, and the reload
+   would be served the same page, for up to the edge TTL. A queued check runs
+   30s later and purges the whole zone once, only when the forum-facing token
+   really changed (admin-only assets don't count, nor do rebuilds with
+   identical output).
 
 ## The matching Cloudflare Cache Rule (v2)
 

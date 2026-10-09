@@ -80,9 +80,33 @@ class CloudflareCachePurger
     }
 
     /**
+     * Evict everything in the zone. Used when the compiled assets change:
+     * every cached page then embeds an assets token the forum no longer
+     * reports, and purge-by-URL cannot enumerate them all.
+     *
+     * Returns false only when Cloudflare was asked and refused or could not
+     * be reached, so the caller can try again on the next rebuild.
+     */
+    public function purgeEverything(): bool
+    {
+        if (! $this->isConfigured()) {
+            $this->logger->info('[edge-cache] CF purge skipped (no credentials): everything');
+
+            return true;
+        }
+
+        return $this->send(['purge_everything' => true], 'everything');
+    }
+
+    /**
      * @param string[] $urls at most 30
      */
     private function purgeBatch(array $urls): void
+    {
+        $this->send(['files' => $urls], implode(' ', $urls));
+    }
+
+    private function send(array $body, string $what): bool
     {
         try {
             $response = $this->http->request(
@@ -93,7 +117,7 @@ class CloudflareCachePurger
                         'Authorization' => 'Bearer '.$this->apiToken,
                         'Content-Type' => 'application/json',
                     ],
-                    'json' => ['files' => $urls],
+                    'json' => $body,
                 ]
             );
 
@@ -101,21 +125,25 @@ class CloudflareCachePurger
             // revoked/rate-limited token, which Guzzle won't throw on. Surface
             // those as warnings so the daily flarum.log monitor catches a purge
             // outage — otherwise the long TTL would quietly serve stale pages.
-            $body = json_decode((string) $response->getBody(), true);
+            $result = json_decode((string) $response->getBody(), true);
 
-            if (($body['success'] ?? false) === true) {
-                $this->logger->info('[edge-cache] CF purge: '.implode(' ', $urls));
-            } else {
-                $this->logger->warning(
-                    '[edge-cache] CF purge rejected (success=false): '
-                    .json_encode($body['errors'] ?? $body).' for: '.implode(' ', $urls)
-                );
+            if (($result['success'] ?? false) === true) {
+                $this->logger->info('[edge-cache] CF purge: '.$what);
+
+                return true;
             }
+
+            $this->logger->warning(
+                '[edge-cache] CF purge rejected (success=false): '
+                .json_encode($result['errors'] ?? $result).' for: '.$what
+            );
         } catch (\Throwable $e) {
             // Never let a transient CF blip crash the queue worker in a loop:
             // log and drop. The bounded edge TTL still caps staleness if an
             // occasional purge is missed.
-            $this->logger->warning('[edge-cache] CF purge failed ('.$e->getMessage().') for: '.implode(' ', $urls));
+            $this->logger->warning('[edge-cache] CF purge failed ('.$e->getMessage().') for: '.$what);
         }
+
+        return false;
     }
 }

@@ -3,12 +3,15 @@
 use Ekumanov\EdgeCache\AddDiscussionChunkPreloads;
 use Ekumanov\EdgeCache\EdgeCacheMiddleware;
 use Ekumanov\EdgeCache\Listener\PurgeDiscussionCache;
+use Ekumanov\EdgeCache\Listener\PurgeOnAssetsRecompiled;
 use Ekumanov\EdgeCache\PrePaintDiscussion;
 use Flarum\Discussion\Event\Deleted as DiscussionDeleted;
 use Flarum\Discussion\Event\Hidden as DiscussionHidden;
 use Flarum\Discussion\Event\Renamed;
 use Flarum\Discussion\Event\Restored as DiscussionRestored;
 use Flarum\Extend;
+use Flarum\Foundation\Event\ClearingCache;
+use Flarum\Frontend\Event\AssetsRecompiled;
 use Flarum\Post\Event\Deleted as PostDeleted;
 use Flarum\Post\Event\Hidden as PostHidden;
 use Flarum\Post\Event\Posted;
@@ -79,5 +82,11 @@ return [
         // ekumanov/flarum-ext-link-preview fetches cards in a queued job that
         // finishes after the Posted purge above has run, so a guest page cached
         // in between kept showing a pending skeleton for the full edge TTL.
-        ->listen('Ekumanov\LinkPreview\Event\PreviewsChanged', PurgeDiscussionCache::class),
+        ->listen('Ekumanov\LinkPreview\Event\PreviewsChanged', PurgeDiscussionCache::class)
+        // A rebuild of the forum assets (extension toggled, appearance or
+        // custom LESS saved, cache cleared) leaves every cached page with an
+        // outdated assets token: guests get a reload prompt that a reload
+        // cannot satisfy. Purge the zone when the token really changed.
+        ->listen(AssetsRecompiled::class, PurgeOnAssetsRecompiled::class)
+        ->listen(ClearingCache::class, PurgeOnAssetsRecompiled::class),
 ];
